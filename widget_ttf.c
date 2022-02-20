@@ -26,6 +26,16 @@
  *
  */
 
+/* brect[8]
+* 0	lower left corner, X position
+* 1	lower left corner, Y position
+* 2	lower right corner, X position
+* 3	lower right corner, Y position
+* 4	upper right corner, X position
+* 5	upper right corner, Y position
+* 6	upper left corner, X position
+* 7	upper left corner, Y position
+*/
 
 #include "config.h"
 
@@ -72,16 +82,21 @@ static void widget_ttf_render(const char *Name, WIDGET_TTF * Image)
 	gdImagePtr gdImage;
 
 	int color;
+	int debugborder;
 	int trans;
 	int brect[8];
+	int mrect[8];
 	int _width,_height;
 	char *e;
 	unsigned long l;
 	unsigned char r,g,b,a;
 	char *fcolor;
 	char *text;
+	char *dborder;
 	double size;
 	char *font,*err,*align;
+	char *mheight;
+	char *mtext;
 
 
 	/* clear bitmap */
@@ -114,22 +129,38 @@ static void widget_ttf_render(const char *Name, WIDGET_TTF * Image)
 		_width = P2N(&Image->_width);
 		_height = P2N(&Image->_height);
 		align = P2S(&Image->align);
+		mheight = P2S(&Image->mheight);
+
+		switch (toupper(mheight[0]))
+		{
+			case 'O': // old behavior
+				mtext = text;
+				break;
+			case 'N': // ignore oversized chars, use for numbers etc
+				mtext = "Äp";
+				break;
+			case 'F': // fullsized for all poss. chars (default)
+			default:
+				mtext = "[Äp}§|";
+				break;
+		}
 
 		if (((_width > 0) && (_height > 0)) && (size == 0))
 		{
 			size = _height;
-			err = gdImageStringFT(NULL,&brect[0],0,font,size,0.,0,0,text);
 			do
 			{
 				size--;
+				err = gdImageStringFT(NULL,&mrect[0],0,font,size,0.,0,0,mtext);
 				err = gdImageStringFT(NULL,&brect[0],0,font,size,0.,0,0,text);
 			}
-			while (((brect[2]-brect[6] + 6) > _width) || ((brect[3]-brect[7] + 6) > _height));
+			while ((brect[2]-brect[6] > _width) || (mrect[3]-mrect[7] > _height));
 			x = _width;
 			y = _height;
 		}
 		else
 		{
+			err = gdImageStringFT(NULL,&mrect[0],0,font,size,0.,0,0,mtext);
 			err = gdImageStringFT(NULL,&brect[0],0,font,size,0.,0,0,text);
 
 			if ((_width > 0) && (_height > 0))
@@ -139,10 +170,11 @@ static void widget_ttf_render(const char *Name, WIDGET_TTF * Image)
 			}
 			else
 			{
-				x = brect[2]-brect[6] + 6;
-				y = brect[3]-brect[7] + 6;
+				x = brect[2]-brect[6];
+				y = mrect[3]-mrect[7];
 			}
 		}
+
 		Image->gdImage = gdImageCreateTrueColor(x,y);
 		gdImageSaveAlpha(Image->gdImage, 1);
 
@@ -180,12 +212,13 @@ static void widget_ttf_render(const char *Name, WIDGET_TTF * Image)
 			switch (toupper(align[0]))
 			{
 			case 'R':
-				x = _width - brect[2] - brect[6] - 3;
+				x = _width - brect[2] - brect[6];
 				break;
 			case 'L':
-				x = 3 - brect[6];
+				x = brect[6];
 				break;
 			case 'C':
+			case 'M':
 				x = (_width - brect[2]-brect[6])/2 - brect[6];
 				break;
 			default:
@@ -193,8 +226,35 @@ static void widget_ttf_render(const char *Name, WIDGET_TTF * Image)
 				break;
 			}
 		else
-			x = 3 - brect[6];
-		y = 3 - brect[7];
+			x = brect[6];
+
+		y = (_height - mrect[1] - mrect[7])/2;
+
+		dborder = P2S(&Image->debugborder);
+
+		if (strlen(dborder) == 8)
+		{
+			l = strtoul(dborder, &e, 16);
+			r = (l >> 24) & 0xff;
+			g = (l >> 16) & 0xff;
+			b = (l >> 8) & 0xff;
+			a = (l & 0xff) /2;
+
+			debugborder = gdImageColorAllocateAlpha(Image->gdImage, r, g, b, a);
+		}
+		else
+		{
+			l = strtoul(dborder, &e, 16);
+			r = (l >> 16) & 0xff;
+			g = (l >> 8) & 0xff;
+			b = l & 0xff;
+
+			debugborder = gdImageColorAllocate(Image->gdImage, r, g, b);
+		}
+
+		if (debugborder)
+			gdImageRectangle(Image->gdImage, 0, 0, _width-1, _height-1, debugborder);
+
 		err = gdImageStringFT(Image->gdImage,&brect[0],color,font,size,0.0,x,y,text);
 
 	}
@@ -281,6 +341,8 @@ static void widget_ttf_update(void *Self)
 		property_eval(&Image->_width);
 		property_eval(&Image->_height);
 		property_eval(&Image->align);
+		property_eval(&Image->debugborder);
+		property_eval(&Image->mheight);
 
 		/* render image into bitmap */
 		widget_ttf_render(W->name, Image);
@@ -336,6 +398,8 @@ int widget_ttf_init(WIDGET * Self)
 		property_load(section, "width", "0", &Image->_width);
 		property_load(section, "height", "0", &Image->_height);
 		property_load(section, "align", "C", &Image->align);
+		property_load(section, "debugborder", "000000", &Image->debugborder);
+		property_load(section, "mheight", "F", &Image->mheight);
 
 		/* sanity checks */
 		if (!property_valid(&Image->font))
@@ -389,9 +453,11 @@ int widget_ttf_quit(WIDGET * Self)
 				property_free(&Image->visible);
 				property_free(&Image->inverted);
 				property_free(&Image->center);
-				property_eval(&Image->_width);
-				property_eval(&Image->_height);
-				property_eval(&Image->align);
+				property_free(&Image->_width);
+				property_free(&Image->_height);
+				property_free(&Image->align);
+				property_free(&Image->debugborder);
+				property_free(&Image->mheight);
 
 				free(Self->data);
 				Self->data = NULL;
